@@ -917,7 +917,7 @@ Buka browser: `http://localhost:8000/api-docs` (Swagger UI)
 | Total tabel database       | 6             |
 | Total API endpoints        | ~20           |
 | Total halaman frontend     | 8             |
-| Total middleware            | 3 file        |
+| Total middleware           | 3 file        |
 | Backend dependencies       | 9 packages    |
 | Frontend dependencies      | 4 packages    |
 | Lines of code (estimasi)   | ~3500+        |
