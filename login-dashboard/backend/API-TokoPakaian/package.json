@@ -10,7 +10,11 @@
     "setup": "node setup-demo.js",
     "docs": "node open-swagger.js",
     "swagger": "node open-swagger.js",
-    "test:full": "npm run setup && npm run test"
+    "test:full": "npm run setup && npm run test",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "npm start --prefix ../backend/API-TokoPakaian",
+    "dev:all": "concurrently \"npm run dev\" \"npm run server\""
   },
   "keywords": [
     "api",
