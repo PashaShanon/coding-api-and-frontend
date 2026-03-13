@@ -13,7 +13,7 @@ router.get('/', authenticateToken, async (req, res) => {
       SELECT p.*, c.name as category_name 
       FROM products p 
       LEFT JOIN categories c ON p.category_id = c.id 
-      WHERE 1=1
+      WHERE p.is_deleted = FALSE
     `;
     let params = [];
     let paramIndex = 1;
@@ -36,7 +36,7 @@ router.get('/', authenticateToken, async (req, res) => {
     const result = await pool.query(query, params);
     
     // Get total count for pagination
-    let countQuery = `SELECT COUNT(*) FROM products p WHERE 1=1`;
+    let countQuery = `SELECT COUNT(*) FROM products p WHERE p.is_deleted = FALSE`;
     let countParams = [];
     paramIndex = 1;
     
@@ -95,7 +95,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
       `SELECT p.*, c.name as category_name 
        FROM products p 
        LEFT JOIN categories c ON p.category_id = c.id 
-       WHERE p.id = $1`,
+       WHERE p.id = $1 AND p.is_deleted = FALSE`,
       [parseInt(id)]
     );
 
@@ -160,7 +160,7 @@ function validateProductInput(name, description, price, stock, category_id) {
 
 router.post('/', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { name, description, price, stock, category_id, image } = req.body;
+    const { name, description, price, stock, category_id, image, sku, size, color } = req.body;
 
     // Validate input
     const validationErrors = validateProductInput(name, description, price, stock, category_id);
@@ -175,7 +175,7 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
 
     // Check if category exists
     const categoryCheck = await pool.query(
-      'SELECT id FROM categories WHERE id = $1',
+      'SELECT id FROM categories WHERE id = $1 AND is_deleted = FALSE',
       [category_id]
     );
 
@@ -188,8 +188,8 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
     }
 
     const result = await pool.query(
-      'INSERT INTO products (name, description, price, stock, category_id, image) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [name.trim(), description.trim(), parseFloat(price), parseInt(stock), parseInt(category_id), image || null]
+      'INSERT INTO products (name, description, price, stock, category_id, image, sku, size, color) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+      [name.trim(), description.trim(), parseFloat(price), parseInt(stock), parseInt(category_id), image || null, sku || null, size || null, color || null]
     );
 
     res.status(201).json({
@@ -222,7 +222,7 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
 router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, price, stock, category_id, image } = req.body;
+    const { name, description, price, stock, category_id, image, sku, size, color } = req.body;
 
     // Validate ID parameter
     if (!id || isNaN(parseInt(id))) {
@@ -246,7 +246,7 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
 
     // Check if category exists
     const categoryCheck = await pool.query(
-      'SELECT id FROM categories WHERE id = $1',
+      'SELECT id FROM categories WHERE id = $1 AND is_deleted = FALSE',
       [category_id]
     );
 
@@ -259,8 +259,8 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
     }
 
     const result = await pool.query(
-      'UPDATE products SET name = $1, description = $2, price = $3, stock = $4, category_id = $5, image = $6, updated_at = CURRENT_TIMESTAMP WHERE id = $7 RETURNING *',
-      [name.trim(), description.trim(), parseFloat(price), parseInt(stock), parseInt(category_id), image || null, parseInt(id)]
+      'UPDATE products SET name = $1, description = $2, price = $3, stock = $4, category_id = $5, image = $6, sku = $7, size = $8, color = $9, updated_at = CURRENT_TIMESTAMP WHERE id = $10 RETURNING *',
+      [name.trim(), description.trim(), parseFloat(price), parseInt(stock), parseInt(category_id), image || null, sku || null, size || null, color || null, parseInt(id)]
     );
 
     if (result.rows.length === 0) {
@@ -313,7 +313,7 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
 
     // Check if product exists before deletion
     const existsResult = await pool.query(
-      'SELECT id, name FROM products WHERE id = $1',
+      'SELECT id, name FROM products WHERE id = $1 AND is_deleted = FALSE',
       [parseInt(id)]
     );
 
@@ -327,28 +327,15 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
 
     const productName = existsResult.rows[0].name;
 
-    // Check if product is referenced in any transaction items
-    const transactionCheck = await pool.query(
-      'SELECT COUNT(*) FROM transaction_items WHERE product_id = $1',
-      [parseInt(id)]
-    );
-
-    if (parseInt(transactionCheck.rows[0].count) > 0) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Cannot delete product that has been sold. Product exists in transaction history.',
-        code: 'PRODUCT_IN_TRANSACTIONS'
-      });
-    }
-
+    // Perform soft delete
     const result = await pool.query(
-      'DELETE FROM products WHERE id = $1 RETURNING *',
+      'UPDATE products SET is_deleted = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
       [parseInt(id)]
     );
 
     res.json({
       status: 'success',
-      message: `Product '${productName}' deleted successfully`,
+      message: `Product '${productName}' moved to archive`,
       data: {
         deletedProduct: result.rows[0]
       }
@@ -356,16 +343,6 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
 
   } catch (error) {
     console.error('Delete product error:', error);
-    
-    // Handle foreign key constraint errors
-    if (error.code === '23503') {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Cannot delete product. It is referenced by other records.',
-        code: 'FOREIGN_KEY_CONSTRAINT'
-      });
-    }
-    
     res.status(500).json({
       status: 'error',
       message: 'Failed to delete product',

@@ -6,9 +6,13 @@ const { authenticateToken, authenticateRefreshToken } = require('../middleware/a
 const router = express.Router();
 
 // Validation helpers
-function validateLoginInput(email, password) {
+function validateRegisterInput(name, email, password) {
   const errors = [];
   
+  if (!name || !name.trim()) {
+    errors.push('Name is required');
+  }
+
   if (!email || !email.trim()) {
     errors.push('Email is required');
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
@@ -24,20 +28,62 @@ function validateLoginInput(email, password) {
   return errors;
 }
 
-router.post('/login', async (req, res) => {
+router.post('/register', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { name, email, password } = req.body;
 
-    // Validasi input
-    const validationErrors = validateLoginInput(email, password);
+    // Validate input
+    const validationErrors = validateRegisterInput(name, email, password);
     if (validationErrors.length > 0) {
       return res.status(400).json({
         status: 'error',
         message: 'Validation failed',
-        errors: validationErrors,
-        data: {}
+        errors: validationErrors
       });
     }
+
+    // Check if email already exists
+    const existingResult = await pool.query(
+      'SELECT id FROM users WHERE email = $1',
+      [email.trim().toLowerCase()]
+    );
+
+    if (existingResult.rows.length > 0) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Email already exists',
+        code: 'EMAIL_EXISTS'
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // Insert user with is_active = false
+    const result = await pool.query(
+      'INSERT INTO users (name, email, password, role, is_active) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, role, is_active, created_at',
+      [name.trim(), email.trim().toLowerCase(), hashedPassword, 'kasir', false]
+    );
+
+    res.status(201).json({
+      status: 'success',
+      message: 'Registration successful. Please wait for admin approval.',
+      data: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Registration failed. Please try again.',
+      code: 'REGISTER_ERROR'
+    });
+  }
+});
+
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
     // Cari user berdasarkan email
     const result = await pool.query(
@@ -60,8 +106,8 @@ router.post('/login', async (req, res) => {
     if (!user.is_active) {
       return res.status(401).json({
         status: 'error',
-        message: 'Your account has been deactivated. Please contact administrator.',
-        code: 'ACCOUNT_DEACTIVATED',
+        message: 'Akun Anda belum aktif. Silakan hubungi admin untuk aktivasi.',
+        code: 'ACCOUNT_INACTIVE',
         data: {}
       });
     }
@@ -85,13 +131,12 @@ router.post('/login', async (req, res) => {
       role: user.role
     });
 
-    // Update last login time (optional)
+    // Update last login time
     await pool.query(
       'UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = $1',
       [user.id]
     );
 
-    // Response sukses (tanpa password)
     const { password: _, ...userWithoutPassword } = user;
     
     res.json({

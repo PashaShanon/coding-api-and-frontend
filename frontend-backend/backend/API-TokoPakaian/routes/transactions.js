@@ -4,6 +4,53 @@ const { authenticateToken } = require('../middleware/auth');
 const { requireAdminOrKasir } = require('../middleware/admin');
 const router = express.Router();
 
+router.get('/stats', authenticateToken, async (req, res) => {
+  try {
+    // 1. Total Penjualan (All time)
+    const totalSales = await pool.query(
+      "SELECT SUM(total_amount) as total FROM transactions WHERE status = 'completed'"
+    );
+
+    // 2. Transaksi Baru (Today)
+    const newTransactions = await pool.query(
+      "SELECT COUNT(*) as count FROM transactions WHERE DATE(created_at) = CURRENT_DATE"
+    );
+
+    // 3. Produk Terjual (Total items sold)
+    const productsSold = await pool.query(
+      "SELECT SUM(quantity) as total FROM transaction_items"
+    );
+
+    // 4. Stok Tersedia
+    const totalStock = await pool.query("SELECT SUM(stock) as total FROM products WHERE is_deleted = FALSE");
+
+    // 5. Total Categories
+    const totalCategories = await pool.query("SELECT COUNT(*) as count FROM categories WHERE is_deleted = FALSE");
+
+    // 6. Total Products (Count)
+    const totalProducts = await pool.query("SELECT COUNT(*) as count FROM products WHERE is_deleted = FALSE");
+
+    // 7. Total Users
+    const totalUsers = await pool.query("SELECT COUNT(*) as count FROM users WHERE is_active = true");
+
+    res.json({
+      success: true,
+      data: {
+        total_sales: parseFloat(totalSales.rows[0].total || 0),
+        new_transactions: parseInt(newTransactions.rows[0].count || 0),
+        products_sold: parseInt(productsSold.rows[0].total || 0),
+        total_stock: parseInt(totalStock.rows[0].total || 0),
+        total_categories: parseInt(totalCategories.rows[0].count || 0),
+        total_products: parseInt(totalProducts.rows[0].count || 0),
+        total_users: parseInt(totalUsers.rows[0].count || 0)
+      }
+    });
+  } catch (error) {
+    console.error('Stats error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
 router.get('/reports/summary', authenticateToken, requireAdminOrKasir, async (req, res) => {
   try {
     // Total Sales Today
@@ -203,10 +250,13 @@ router.post('/', authenticateToken, requireAdminOrKasir, async (req, res) => {
       totalAmount += productResult.rows[0].price * item.quantity;
     }
 
+    // Add 11% tax to match frontend POS calculation
+    const finalTotalAmount = totalAmount * 1.11;
+
     // Create transaction
     const transactionResult = await client.query(
       'INSERT INTO transactions (transaction_code, user_id, total_amount, payment_method) VALUES ($1, $2, $3, $4) RETURNING *',
-      [transactionCode, user_id, totalAmount, payment_method]
+      [transactionCode, user_id, finalTotalAmount, payment_method]
     );
 
     const transactionId = transactionResult.rows[0].id;

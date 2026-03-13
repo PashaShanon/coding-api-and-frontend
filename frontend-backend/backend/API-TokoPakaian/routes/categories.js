@@ -7,7 +7,7 @@ const router = express.Router();
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT * FROM categories ORDER BY name'
+      'SELECT * FROM categories WHERE is_deleted = FALSE ORDER BY name'
     );
 
     res.json({
@@ -57,7 +57,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
     }
 
     const result = await pool.query(
-      'SELECT * FROM categories WHERE id = $1',
+      'SELECT * FROM categories WHERE id = $1 AND is_deleted = FALSE',
       [parseInt(id)]
     );
 
@@ -210,7 +210,7 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
 
     // Check if category exists
     const existsResult = await pool.query(
-      'SELECT id, name FROM categories WHERE id = $1',
+      'SELECT id, name FROM categories WHERE id = $1 AND is_deleted = FALSE',
       [parseInt(id)]
     );
 
@@ -223,29 +223,62 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
     }
 
     const categoryName = existsResult.rows[0].name;
+    const { cascade = 'false' } = req.query;
 
-    // Check if category has products
+    if (cascade === 'true') {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        
+        // Soft delete all products in this category
+        await client.query(
+          'UPDATE products SET is_deleted = TRUE, updated_at = CURRENT_TIMESTAMP WHERE category_id = $1',
+          [parseInt(id)]
+        );
+        
+        // Soft delete the category itself
+        await client.query(
+          'UPDATE categories SET is_deleted = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+          [parseInt(id)]
+        );
+        
+        await client.query('COMMIT');
+        
+        return res.json({
+          status: 'success',
+          message: `Category '${categoryName}' and all its products moved to archive`,
+          data: { id: parseInt(id) }
+        });
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
+    }
+
+    // Check if category has active products
     const productCheck = await pool.query(
-      'SELECT COUNT(*) FROM products WHERE category_id = $1',
+      'SELECT COUNT(*) FROM products WHERE category_id = $1 AND is_deleted = FALSE',
       [parseInt(id)]
     );
 
     if (parseInt(productCheck.rows[0].count) > 0) {
       return res.status(400).json({
         status: 'error',
-        message: 'Cannot delete category that has products. Please reassign products first.',
+        message: 'Cannot delete category that has products. Please reassign products or use cascade delete.',
         code: 'CATEGORY_HAS_PRODUCTS'
       });
     }
 
     const result = await pool.query(
-      'DELETE FROM categories WHERE id = $1 RETURNING *',
+      'UPDATE categories SET is_deleted = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
       [parseInt(id)]
     );
 
     res.json({
       status: 'success',
-      message: `Category '${categoryName}' deleted successfully`,
+      message: `Category '${categoryName}' moved to archive`,
       data: {
         deletedCategory: result.rows[0]
       }
@@ -253,16 +286,6 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
 
   } catch (error) {
     console.error('Delete category error:', error);
-    
-    // Handle foreign key constraint errors
-    if (error.code === '23503') {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Cannot delete category. It is referenced by products.',
-        code: 'FOREIGN_KEY_CONSTRAINT'
-      });
-    }
-    
     res.status(500).json({
       status: 'error',
       message: 'Failed to delete category',
